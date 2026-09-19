@@ -21,3 +21,4 @@ target
 #.idea/
 Idea.md
 .env
+moderator.db*
