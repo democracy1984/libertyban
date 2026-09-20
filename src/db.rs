@@ -67,3 +67,28 @@ pub async fn get_role(
         .fetch_optional(pool)
         .await
 }
+
+pub async fn add_admin(pool: &SqlitePool, chat_id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO admins (chat_id, user_id, role) VALUES (?, ?, 'admin') ON CONFLICT DO NOTHING",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn remove_admin(
+    pool: &SqlitePool,
+    chat_id: i64,
+    user_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM admins WHERE chat_id = ? AND user_id = ? AND role = 'admin'")
+            .bind(chat_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() > 0)
+}
