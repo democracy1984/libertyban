@@ -55,3 +55,15 @@ async fn create_new(pool: &SqlitePool, config: &Config) {
     .await
     .expect("Failed to add chat settings");
 }
+
+pub async fn get_role(
+    pool: &SqlitePool,
+    chat_id: i64,
+    user_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT role FROM admins WHERE chat_id = ? AND user_id = ?")
+        .bind(chat_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}

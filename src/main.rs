@@ -1,15 +1,15 @@
+mod commands;
 mod config;
 mod db;
 
-use teloxide::{prelude::*, types::ChatId};
+use teloxide::prelude::*;
 
 #[tokio::main]
 async fn main() {
     let config = config::load();
-    let _pool = db::init(&config).await;
-
+    let pool = db::init(&config).await;
     let bot = Bot::new(config.telegram_api_key.clone());
-    bot.send_message(ChatId(config.owner_chat), "db is ready")
-        .await
-        .expect("Failed to send message");
+    println!("Bot is ready");
+
+    commands::run(bot, pool).await;
 }

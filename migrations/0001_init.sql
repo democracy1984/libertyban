@@ -31,6 +31,7 @@ CREATE TABLE votes (
   starter_user_id INTEGER NOT NULL,
   message_id      INTEGER,
   reasons         TEXT,
+  reported_message_id INTEGER,
   status          TEXT NOT NULL DEFAULT 'active'
                   CHECK (status IN ('active','banned','cancelled','expired')),
   created_at      INTEGER NOT NULL
