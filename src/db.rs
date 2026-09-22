@@ -4,6 +4,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub async fn init(config: &Config) -> SqlitePool {
     let options = SqliteConnectOptions::from_str(&config.db_url)
@@ -90,5 +91,80 @@ pub async fn remove_admin(
             .bind(user_id)
             .execute(pool)
             .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Clock is before 1970")
+        .as_secs() as i64
+}
+
+pub async fn get_limits(
+    pool: &SqlitePool,
+    chat_id: i64,
+) -> Result<Option<(i64, i64)>, sqlx::Error> {
+    sqlx::query_as("SELECT action_limit, action_period_hours FROM chat_settings WHERE chat_id = ?")
+        .bind(chat_id)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn count_bans_since(
+    pool: &SqlitePool,
+    chat_id: i64,
+    admin_id: i64,
+    since: i64,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM banned_users WHERE chat_id = ? AND banned_by = ? AND banned_at > ?",
+    )
+    .bind(chat_id)
+    .bind(admin_id)
+    .bind(since)
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn ban_user(
+    pool: &SqlitePool,
+    chat_id: i64,
+    user_id: i64,
+    banned_by: i64,
+    reason: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO banned_users (chat_id, user_id, reason, status, banned_by, banned_at) \
+         VALUES (?, ?, ?, 'banned', ?, ?)",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .bind(reason)
+    .bind(banned_by)
+    .bind(now())
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "UPDATE votes SET status = 'banned' WHERE chat_id = ? AND target_user_id = ? AND status = 'active'",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn unban_user(
+    pool: &SqlitePool,
+    chat_id: i64,
+    user_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_users WHERE chat_id = ? AND user_id = ?")
+        .bind(chat_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
