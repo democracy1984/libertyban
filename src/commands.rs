@@ -12,6 +12,7 @@ enum Command {
     RemoveAdmin,
     Ban,
     Unban(i64),
+    Report,
 }
 
 const OWNER_HELP: &str =
@@ -39,6 +40,7 @@ async fn handle(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
         Command::RemoveAdmin => remove_admin(&bot, &msg, &pool).await,
         Command::Ban => ban(&bot, &msg, &pool).await,
         Command::Unban(user_id) => unban(&bot, &msg, &pool, user_id).await,
+        Command::Report => report(&bot, &msg, &pool).await,
     }
 }
 
@@ -244,7 +246,7 @@ async fn ban(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()> 
         pool,
         msg.chat.id.0,
         target.id.0 as i64,
-        user.id.0 as i64,
+        Some(user.id.0 as i64),
         reason.as_deref(),
     )
     .await
@@ -286,6 +288,7 @@ async fn unban(bot: &Bot, msg: &Message, pool: &SqlitePool, user_id: i64) -> Res
     // сначала снимаем ограничение в Telegram, чтобы человек мог зайти снова
     if let Err(e) = bot
         .unban_chat_member(msg.chat.id, UserId(user_id as u64))
+        .only_if_banned(true)
         .await
     {
         eprintln!("Unban failed: {e}");
@@ -306,5 +309,155 @@ async fn unban(bot: &Bot, msg: &Message, pool: &SqlitePool, user_id: i64) -> Res
         println!("{text}");
     }
     bot.send_message(msg.chat.id, text).await?;
+    Ok(())
+}
+
+async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()> {
+    let Some(user) = &msg.from else {
+        return Ok(());
+    };
+    let Some(reply) = msg.reply_to_message() else {
+        bot.send_message(msg.chat.id, "Ответь этой командой на сообщение нарушителя")
+            .await?;
+        return Ok(());
+    };
+    let Some(target) = &reply.from else {
+        return Ok(());
+    };
+    if target.is_bot {
+        bot.send_message(msg.chat.id, "Этого пользователя нельзя репортить")
+            .await?;
+        return Ok(());
+    }
+    if target.id == user.id {
+        bot.send_message(msg.chat.id, "Зачем тебе репортить самого себя?")
+            .await?;
+        return Ok(());
+    }
+    if role_of(pool, msg.chat.id, target.id).await.is_some() {
+        bot.send_message(msg.chat.id, "Админов и владельца репортить нельзя")
+            .await?;
+        return Ok(());
+    }
+    let existing = match db::active_vote(pool, msg.chat.id.0, target.id.0 as i64).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("DB error: {e}");
+            bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                .await?;
+            return Ok(());
+        }
+    };
+    let vote_id = if let Some(vote_id) = existing {
+        match db::add_vote(pool, vote_id, user.id.0 as i64).await {
+            Ok(true) => {}
+            Ok(false) => {
+                bot.send_message(msg.chat.id, "Ты уже голосовал за этого человека")
+                    .await?;
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("DB error: {e}");
+                bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                    .await?;
+                return Ok(());
+            }
+        }
+        vote_id
+    } else {
+        // 3. лимит: только на НОВЫЕ голосования
+        let (limit, hours) = match db::get_limits(pool, msg.chat.id.0).await {
+            Ok(Some(limits)) => limits,
+            Ok(None) => (5, 6),
+            Err(e) => {
+                eprintln!("DB error: {e}");
+                bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                    .await?;
+                return Ok(());
+            }
+        };
+        let since = db::now() - hours * 3600;
+        match db::count_reports_since(pool, msg.chat.id.0, user.id.0 as i64, since).await {
+            Ok(n) if n >= limit => {
+                bot.send_message(
+                    msg.chat.id,
+                    format!("Репортить больше неможешь, лимит не больше {limit} репортов за {hours} ч. Это мера против врагов демократии"),
+                )
+                .await?;
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("DB error: {e}");
+                bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        let reason = reason_of(msg);
+        match db::start_vote(
+            pool,
+            msg.chat.id.0,
+            target.id.0 as i64,
+            user.id.0 as i64,
+            reply.id.0 as i64,
+            reason.as_deref(),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("DB error: {e}");
+                bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                    .await?;
+                return Ok(());
+            }
+        }
+    };
+
+    // 4. считаем голоса и смотрим, не пора ли банить
+    let (count, required) = match (
+        db::vote_count(pool, vote_id).await,
+        db::required_votes(pool, msg.chat.id.0).await,
+    ) {
+        (Ok(c), Ok(r)) => (c, r),
+        _ => {
+            bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                .await?;
+            return Ok(());
+        }
+    };
+
+    if count >= required {
+        if let Err(e) = bot.ban_chat_member(msg.chat.id, target.id).await {
+            eprintln!("Ban failed: {e}");
+            bot.send_message(
+                msg.chat.id,
+                "Голосование набрало кворум, но бан не удался. \
+                 Бот должен быть админом с правом блокировать участников",
+            )
+            .await?;
+            return Ok(());
+        }
+        if let Err(e) = db::ban_user(pool, msg.chat.id.0, target.id.0 as i64, None, None).await {
+            eprintln!("DB error: {e}");
+        }
+        if let Err(e) = bot.delete_message(msg.chat.id, reply.id).await {
+            eprintln!("Delete failed: {e}");
+        }
+        bot.send_message(
+            msg.chat.id,
+            format!(
+                "{} совершенно справедливо забанен голосованием ({count}/{required})",
+                mention(target)
+            ),
+        )
+        .parse_mode(ParseMode::Html)
+        .await?;
+    } else {
+        bot.send_message(msg.chat.id, format!("Голос учтён ({count}/{required})"))
+            .await?;
+    }
     Ok(())
 }
