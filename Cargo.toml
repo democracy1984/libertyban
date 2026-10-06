@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 dotenvy = "0.15"
+env_logger = "0.11.11"
+fern = "0.7.1"
+humantime = "2.4.0"
+log = "0.4.34"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }
 teloxide = { version = "0.17", features = ["macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

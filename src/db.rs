@@ -23,10 +23,10 @@ pub async fn init(config: &Config) -> SqlitePool {
     .expect("Failed to check database");
 
     if admins_table.is_some() {
-        println!("Database already exists, not touching it");
+        log::info!("Database already exists, not touching it");
     } else {
         create_new(&pool, config).await;
-        println!("Database created");
+        log::info!("Database created");
     }
     pool
 }
@@ -193,34 +193,42 @@ pub async fn start_vote(
 ) -> Result<i64, sqlx::Error> {
     let now = now();
     let vote_id: i64 = sqlx::query_scalar(
-        "INSERT INTO votes (chat_id, target_user_id, starter_user_id, reasons, reported_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO votes (chat_id, target_user_id, starter_user_id, reported_message_id, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(chat_id)
     .bind(target_user_id)
     .bind(starter_user_id)
-    .bind(reason)
     .bind(reported_message_id)
     .bind(now)
     .fetch_one(pool)
     .await?;
 
-    sqlx::query("INSERT INTO vote_users (vote_id, user_id, created_at) VALUES (?, ?, ?)")
-        .bind(vote_id)
-        .bind(starter_user_id)
-        .bind(now)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO vote_users (vote_id, user_id, reason, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(vote_id)
+    .bind(starter_user_id)
+    .bind(reason)
+    .bind(now)
+    .execute(pool)
+    .await?;
 
     Ok(vote_id)
 }
 
-pub async fn add_vote(pool: &SqlitePool, vote_id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
+pub async fn add_vote(
+    pool: &SqlitePool,
+    vote_id: i64,
+    user_id: i64,
+    reason: Option<&str>,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
-        "INSERT INTO vote_users (vote_id, user_id, created_at) VALUES (?, ?, ?) \
+        "INSERT INTO vote_users (vote_id, user_id, reason, created_at) VALUES (?, ?, ?, ?) \
          ON CONFLICT DO NOTHING",
     )
     .bind(vote_id)
     .bind(user_id)
+    .bind(reason)
     .bind(now())
     .execute(pool)
     .await?;
@@ -256,5 +264,34 @@ pub async fn count_reports_since(
     .bind(starter_user_id)
     .bind(since)
     .fetch_one(pool)
+    .await
+}
+
+pub async fn set_vote_message(
+    pool: &SqlitePool,
+    vote_id: i64,
+    message_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE votes SET message_id = ? WHERE id = ?")
+        .bind(message_id)
+        .bind(vote_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn vote_message(pool: &SqlitePool, vote_id: i64) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT message_id FROM votes WHERE id = ?")
+        .bind(vote_id)
+        .fetch_one(pool)
+        .await
+}
+
+pub async fn vote_reasons(pool: &SqlitePool, vote_id: i64) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT reason FROM vote_users WHERE vote_id = ? AND reason IS NOT NULL ORDER BY rowid",
+    )
+    .bind(vote_id)
+    .fetch_all(pool)
     .await
 }

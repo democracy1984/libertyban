@@ -1,6 +1,6 @@
 use crate::db;
 use sqlx::SqlitePool;
-use teloxide::types::{ParseMode, User};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode, User};
 use teloxide::utils::html::escape;
 use teloxide::{prelude::*, utils::command::BotCommands};
 
@@ -66,9 +66,8 @@ async fn help(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()>
     let Some(user) = &msg.from else {
         return Ok(());
     };
-    if cfg!(debug_assertions) {
-        println!("/help from user {} in chat {}", user.id.0, msg.chat.id.0);
-    }
+
+    // log::debug!("/help from user {} in chat {}", user.id.0, msg.chat.id.0);
 
     let text = match role_of(pool, msg.chat.id, user.id).await.as_deref() {
         Some("owner") => OWNER_HELP,
@@ -95,24 +94,28 @@ async fn give_admin(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResu
             .await?;
         return Ok(());
     };
+
     if target.is_bot {
         bot.send_message(msg.chat.id, "Боту права выдать нельзя")
             .await?;
         return Ok(());
     }
 
-    let text = match db::add_admin(pool, msg.chat.id.0, target.id.0 as i64).await {
-        Ok(true) => format!("{} теперь администратор", mention(target)),
+    let chat = msg.chat.id.0;
+    let by = user.id.0;
+    let target_id = target.id.0;
+
+    let text = match db::add_admin(pool, chat, target_id as i64).await {
+        Ok(true) => {
+            log::info!("give_admin chat={chat} by={by} target={target_id}");
+            format!("{} теперь администратор", mention(target))
+        }
         Ok(false) => "Этот человек уже админ или владелец".to_string(),
         Err(e) => {
-            eprintln!("DB error: {e}");
+            log::error!("give_admin chat={chat} by={by} target={target_id}: DB error: {e}");
             "Внутренняя ошибка, попробуй позже".to_string()
         }
     };
-
-    if cfg!(debug_assertions) {
-        println!("{}", text);
-    }
 
     bot.send_message(msg.chat.id, text)
         .parse_mode(ParseMode::Html)
@@ -137,18 +140,24 @@ async fn remove_admin(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseRe
         return Ok(());
     };
 
-    let text = match db::remove_admin(pool, msg.chat.id.0, target.id.0 as i64).await {
-        Ok(true) => format!("{} больше не администратор", target.full_name()),
+    let chat = msg.chat.id.0;
+    let by = user.id.0;
+    let target_id = target.id.0;
+
+    let text = match db::remove_admin(pool, chat, target_id as i64).await {
+        Ok(true) => {
+            log::info!("remove_admin chat={chat} by={by} target={target_id}");
+            format!("{} больше не администратор", mention(target))
+        }
         Ok(false) => "Он и не был админом".to_string(),
         Err(e) => {
-            eprintln!("DB error: {e}");
+            log::error!("remove_admin chat={chat} by={by} target={target_id}: DB error: {e}");
             "Внутренняя ошибка, попробуй позже".to_string()
         }
     };
-    if cfg!(debug_assertions) {
-        println!("{}", text);
-    }
-    bot.send_message(msg.chat.id, text).await?;
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html)
+        .await?;
     Ok(())
 }
 
@@ -261,7 +270,7 @@ async fn ban(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()> 
     }
 
     let text = match &reason {
-        Some(r) => format!("{} забанен. Причина: {r}", mention(target)),
+        Some(r) => format!("{} забанен. Причина: {}", mention(target), escape(r)),
         None => format!("{} забанен", mention(target)),
     };
     if cfg!(debug_assertions) {
@@ -308,7 +317,9 @@ async fn unban(bot: &Bot, msg: &Message, pool: &SqlitePool, user_id: i64) -> Res
     if cfg!(debug_assertions) {
         println!("{text}");
     }
-    bot.send_message(msg.chat.id, text).await?;
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html)
+        .await?;
     Ok(())
 }
 
@@ -339,6 +350,10 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
             .await?;
         return Ok(());
     }
+
+    let reason = reason_of(msg);
+
+    // есть ли уже активное голосование против этого человека
     let existing = match db::active_vote(pool, msg.chat.id.0, target.id.0 as i64).await {
         Ok(v) => v,
         Err(e) => {
@@ -348,8 +363,10 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
             return Ok(());
         }
     };
+
     let vote_id = if let Some(vote_id) = existing {
-        match db::add_vote(pool, vote_id, user.id.0 as i64).await {
+        // голосование уже идёт: добавляем свой голос
+        match db::add_vote(pool, vote_id, user.id.0 as i64, reason.as_deref()).await {
             Ok(true) => {}
             Ok(false) => {
                 bot.send_message(msg.chat.id, "Ты уже голосовал за этого человека")
@@ -365,7 +382,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         }
         vote_id
     } else {
-        // 3. лимит: только на НОВЫЕ голосования
+        // голосования нет: проверяем лимит (он только на новые голосования)
         let (limit, hours) = match db::get_limits(pool, msg.chat.id.0).await {
             Ok(Some(limits)) => limits,
             Ok(None) => (5, 6),
@@ -381,7 +398,10 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
             Ok(n) if n >= limit => {
                 bot.send_message(
                     msg.chat.id,
-                    format!("Репортить больше неможешь, лимит не больше {limit} репортов за {hours} ч. Это мера против врагов демократии"),
+                    format!(
+                        "Репортить больше не можешь: лимит {limit} репортов за {hours} ч. \
+                         Это мера против врагов демократии"
+                    ),
                 )
                 .await?;
                 return Ok(());
@@ -395,7 +415,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
             }
         }
 
-        let reason = reason_of(msg);
+        // создаём голосование, автор сразу первый голос
         match db::start_vote(
             pool,
             msg.chat.id.0,
@@ -416,7 +436,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         }
     };
 
-    // 4. считаем голоса и смотрим, не пора ли банить
+    // считаем голоса и смотрим, не пора ли банить
     let (count, required) = match (
         db::vote_count(pool, vote_id).await,
         db::required_votes(pool, msg.chat.id.0).await,
@@ -443,21 +463,67 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         if let Err(e) = db::ban_user(pool, msg.chat.id.0, target.id.0 as i64, None, None).await {
             eprintln!("DB error: {e}");
         }
+        if let Ok(Some(old_id)) = db::vote_message(pool, vote_id).await {
+            let _ = bot
+                .delete_message(msg.chat.id, MessageId(old_id as i32))
+                .await;
+        }
         if let Err(e) = bot.delete_message(msg.chat.id, reply.id).await {
             eprintln!("Delete failed: {e}");
         }
         bot.send_message(
             msg.chat.id,
             format!(
-                "{} совершенно справедливо забанен голосованием ({count}/{required})",
+                "{} забанен голосованием ({count}/{required})",
                 mention(target)
             ),
         )
         .parse_mode(ParseMode::Html)
         .await?;
     } else {
-        bot.send_message(msg.chat.id, format!("Голос учтён ({count}/{required})"))
-            .await?;
+        send_vote_message(bot, pool, msg.chat.id, vote_id, target, count, required).await?;
+    }
+    Ok(())
+}
+
+async fn send_vote_message(
+    bot: &Bot,
+    pool: &SqlitePool,
+    chat: ChatId,
+    vote_id: i64,
+    target: &User,
+    count: i64,
+    required: i64,
+) -> ResponseResult<()> {
+    if let Ok(Some(old_id)) = db::vote_message(pool, vote_id).await {
+        let _ = bot.delete_message(chat, MessageId(old_id as i32)).await;
+    }
+
+    let reasons = db::vote_reasons(pool, vote_id).await.unwrap_or_default();
+    let mut text = format!(
+        "Начато голосование за кик {}\nГолосов: {count}/{required}",
+        mention(target)
+    );
+    if !reasons.is_empty() {
+        text.push_str("\nПричины:");
+        for r in &reasons {
+            text.push_str(&format!("\n• {}", escape(r)));
+        }
+    }
+
+    let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        "Поддержать",
+        format!("vote:{vote_id}"),
+    )]]);
+
+    let sent = bot
+        .send_message(chat, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(keyboard)
+        .await?;
+
+    if let Err(e) = db::set_vote_message(pool, vote_id, sent.id.0 as i64).await {
+        eprintln!("DB error: {e}");
     }
     Ok(())
 }

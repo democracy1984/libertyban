@@ -30,7 +30,6 @@ CREATE TABLE votes (
   target_user_id  INTEGER NOT NULL,
   starter_user_id INTEGER NOT NULL,
   message_id      INTEGER,
-  reasons         TEXT,
   reported_message_id INTEGER,
   status          TEXT NOT NULL DEFAULT 'active'
                   CHECK (status IN ('active','banned','cancelled','expired')),
@@ -42,6 +41,7 @@ CREATE UNIQUE INDEX one_active_vote
 CREATE TABLE vote_users (
   vote_id    INTEGER NOT NULL REFERENCES votes(id),
   user_id    INTEGER NOT NULL,
+  reason     TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (vote_id, user_id)
 );
