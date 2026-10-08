@@ -627,7 +627,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         let reasons = db::vote_reasons(pool, vote_id).await.unwrap_or_default();
 
         let mut text = format!(
-            "{} забанен голосованием ({count}/{required})",
+            "{} был совершенно справедливо забанен демократическим голосованием ({count}/{required})",
             mention(target)
         );
 
@@ -674,7 +674,7 @@ async fn send_vote_message(
     let reasons = db::vote_reasons(pool, vote_id).await.unwrap_or_default();
 
     let mut text = format!(
-        "Начато голосование за кик {}\nГолосов: {count}/{required}",
+        "Начато демократическое голосование за кик {}\nГолосов: {count}/{required}",
         mention(target)
     );
 
