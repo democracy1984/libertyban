@@ -86,7 +86,7 @@ async fn help(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()>
         return Ok(());
     };
 
-    // log::debug!("/help from user {} in chat {}", user.id.0, msg.chat.id.0);
+    log::debug!("/help from user {} in chat {}", user.id.0, msg.chat.id.0);
 
     let text = match role_of(pool, msg.chat.id, user.id).await.as_deref() {
         Some("owner") => OWNER_HELP,
@@ -103,6 +103,12 @@ async fn give_admin(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResu
     };
 
     if role_of(pool, msg.chat.id, user.id).await.as_deref() != Some("owner") {
+        log::warn!(
+            "Permission denied: chat={} by={} command=giveadmin",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Эта команда только для владельца")
             .await?;
         return Ok(());
@@ -149,6 +155,12 @@ async fn remove_admin(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseRe
 
     // Только владелец
     if role_of(pool, msg.chat.id, user.id).await.as_deref() != Some("owner") {
+        log::warn!(
+            "Permission denied: chat={} by={} command=removeadmin",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Эта команда только для владельца")
             .await?;
         return Ok(());
@@ -190,6 +202,12 @@ async fn ban(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()> 
     let role = role_of(pool, msg.chat.id, user.id).await;
 
     if !has_role(role.as_deref(), &["owner", "admin"]) {
+        log::warn!(
+            "Permission denied: chat={} by={} command=ban",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Эта команда только для админов и владельца")
             .await?;
 
@@ -199,29 +217,61 @@ async fn ban(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<()> 
     let is_owner = role.as_deref() == Some("owner");
 
     let Some(reply) = msg.reply_to_message() else {
+        log::warn!(
+            "Ban denied: chat={} by={} reason=no_reply",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Ответь этой командой на сообщение нарушителя")
             .await?;
         return Ok(());
     };
 
     let Some(target) = &reply.from else {
+        log::warn!(
+            "Ban denied: chat={} by={} reason=no_target",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         return Ok(());
     };
 
     // Не бот и не сам юзер
     if target.is_bot {
+        log::warn!(
+            "Ban denied: chat={} by={} target={} reason=bot",
+            msg.chat.id.0,
+            user.id.0,
+            target.id.0
+        );
+
         bot.send_message(msg.chat.id, "Этого пользователя банить нельзя")
             .await?;
         return Ok(());
     }
 
     if target.id == user.id {
+        log::warn!(
+            "Ban denied: chat={} by={} reason=self",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Зачем тебе репортить самого себя?")
             .await?;
         return Ok(());
     }
 
     if role_of(pool, msg.chat.id, target.id).await.is_some() {
+        log::warn!(
+            "Ban denied: chat={} by={} target={} reason=target_is_admin",
+            msg.chat.id.0,
+            user.id.0,
+            target.id.0
+        );
+
         bot.send_message(msg.chat.id, "Админов и владельца банить нельзя")
             .await?;
         return Ok(());
@@ -322,6 +372,12 @@ async fn unban(bot: &Bot, msg: &Message, pool: &SqlitePool, user_id: i64) -> Res
     let role = role_of(pool, msg.chat.id, user.id).await;
 
     if !has_role(role.as_deref(), &["owner", "admin"]) {
+        log::warn!(
+            "Permission denied: chat={} by={} command=unban",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Эта команда только для админов и владельца")
             .await?;
         return Ok(());
@@ -380,22 +436,47 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
     };
 
     let Some(reply) = msg.reply_to_message() else {
+        log::warn!(
+            "Report denied: chat={} by={} reason=no_reply",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Ответь этой командой на сообщение нарушителя")
             .await?;
         return Ok(());
     };
 
     let Some(target) = &reply.from else {
+        log::warn!(
+            "Report denied: chat={} by={} reason=no_target",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         return Ok(());
     };
 
     if target.is_bot {
+        log::warn!(
+            "Report denied: chat={} by={} target={} reason=bot",
+            msg.chat.id.0,
+            user.id.0,
+            target.id.0
+        );
+
         bot.send_message(msg.chat.id, "Этого пользователя нельзя репортить")
             .await?;
         return Ok(());
     }
 
     if target.id == user.id {
+        log::warn!(
+            "Report denied: chat={} by={} reason=self",
+            msg.chat.id.0,
+            user.id.0
+        );
+
         bot.send_message(msg.chat.id, "Зачем тебе репортить самого себя?")
             .await?;
         return Ok(());
@@ -404,6 +485,13 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
     let target_role = role_of(pool, msg.chat.id, target.id).await;
 
     if has_role(target_role.as_deref(), &["owner", "admin"]) {
+        log::warn!(
+            "Report denied: chat={} by={} target={} reason=target_is_admin",
+            msg.chat.id.0,
+            user.id.0,
+            target.id.0
+        );
+
         bot.send_message(msg.chat.id, "Админов и владельца репортить нельзя")
             .await?;
         return Ok(());
@@ -412,6 +500,13 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
     // Админов чата в Telegram бот забанить не может — не начинаем голосование
     if let Ok(member) = bot.get_chat_member(msg.chat.id, target.id).await {
         if member.is_privileged() {
+            log::warn!(
+                "Report denied: chat={} by={} target={} reason=target_is_admin_telegram",
+                msg.chat.id.0,
+                user.id.0,
+                target.id.0
+            );
+
             bot.send_message(msg.chat.id, "Админов чата банить нельзя")
                 .await?;
             return Ok(());
@@ -419,6 +514,9 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
     }
 
     let reason = reason_of(msg);
+
+    // Сообщение от имени чата (анонимный админ): его голос не записываем
+    let anonymous = msg.sender_chat.is_some();
 
     // Есть ли уже активное голосование против этого человека
     let existing = match db::active_vote(pool, msg.chat.id.0, target.id.0 as i64).await {
@@ -435,40 +533,49 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
     };
 
     let vote_id = if let Some(vote_id) = existing {
-        // Голосование уже идёт: добавляем свой голос
-        match db::add_vote(pool, vote_id, user.id.0 as i64, reason.as_deref()).await {
-            Ok(true) => {
-                log::info!(
-                    "Vote added: chat={} by={} target={} vote_id={}",
-                    msg.chat.id.0,
-                    user.id.0,
-                    target.id.0,
-                    vote_id
-                );
-            }
+        if anonymous {
+            log::info!(
+                "Anonymous report: chat={} target={} vote_id={}",
+                msg.chat.id.0,
+                target.id.0,
+                vote_id
+            );
+        } else {
+            // Голосование уже идёт: добавляем свой голос
+            match db::add_vote(pool, vote_id, user.id.0 as i64, reason.as_deref()).await {
+                Ok(true) => {
+                    log::info!(
+                        "Vote added: chat={} by={} target={} vote_id={}",
+                        msg.chat.id.0,
+                        user.id.0,
+                        target.id.0,
+                        vote_id
+                    );
+                }
 
-            Ok(false) => {
-                log::info!(
-                    "Duplicate vote: chat={} by={} target={} vote_id={}",
-                    msg.chat.id.0,
-                    user.id.0,
-                    target.id.0,
-                    vote_id
-                );
+                Ok(false) => {
+                    log::info!(
+                        "Duplicate vote: chat={} by={} target={} vote_id={}",
+                        msg.chat.id.0,
+                        user.id.0,
+                        target.id.0,
+                        vote_id
+                    );
 
-                bot.send_message(msg.chat.id, "Ты уже голосовал за этого человека")
-                    .await?;
+                    bot.send_message(msg.chat.id, "Ты уже голосовал за этого человека")
+                        .await?;
 
-                return Ok(());
-            }
+                    return Ok(());
+                }
 
-            Err(e) => {
-                log::error!("DB error: {e}");
+                Err(e) => {
+                    log::error!("DB error: {e}");
 
-                bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
-                    .await?;
+                    bot.send_message(msg.chat.id, "Внутренняя ошибка, попробуй позже")
+                        .await?;
 
-                return Ok(());
+                    return Ok(());
+                }
             }
         }
 
@@ -529,7 +636,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         }
 
         // Создаём голосование.
-        // Автор репорта автоматически становится первым голосом.
+        // Автор репорта становится первым голосом, анонимный — нет.
         match db::start_vote(
             pool,
             msg.chat.id.0,
@@ -537,6 +644,7 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
             user.id.0 as i64,
             reply.id.0 as i64,
             reason.as_deref(),
+            !anonymous,
         )
         .await
         {

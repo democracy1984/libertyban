@@ -198,6 +198,7 @@ pub async fn start_vote(
     starter_user_id: i64,
     reported_message_id: i64,
     reason: Option<&str>,
+    first_vote: bool,
 ) -> Result<i64, sqlx::Error> {
     let now = now();
     let vote_id: i64 = sqlx::query_scalar(
@@ -211,15 +212,18 @@ pub async fn start_vote(
     .fetch_one(pool)
     .await?;
 
-    sqlx::query(
-        "INSERT INTO vote_users (vote_id, user_id, reason, created_at) VALUES (?, ?, ?, ?)",
-    )
-    .bind(vote_id)
-    .bind(starter_user_id)
-    .bind(reason)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    // Анонимный автор (от имени чата): голос за него не записываем
+    if first_vote {
+        sqlx::query(
+            "INSERT INTO vote_users (vote_id, user_id, reason, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(vote_id)
+        .bind(starter_user_id)
+        .bind(reason)
+        .bind(now)
+        .execute(pool)
+        .await?;
+    }
 
     Ok(vote_id)
 }
