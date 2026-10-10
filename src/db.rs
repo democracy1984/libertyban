@@ -156,6 +156,14 @@ pub async fn ban_user(
     Ok(())
 }
 
+pub async fn cancel_vote(pool: &SqlitePool, vote_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE votes SET status = 'cancelled' WHERE id = ? AND status = 'active'")
+        .bind(vote_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn unban_user(
     pool: &SqlitePool,
     chat_id: i64,

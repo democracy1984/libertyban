@@ -409,6 +409,15 @@ async fn report(bot: &Bot, msg: &Message, pool: &SqlitePool) -> ResponseResult<(
         return Ok(());
     }
 
+    // Админов чата в Telegram бот забанить не может — не начинаем голосование
+    if let Ok(member) = bot.get_chat_member(msg.chat.id, target.id).await {
+        if member.is_privileged() {
+            bot.send_message(msg.chat.id, "Админов чата банить нельзя")
+                .await?;
+            return Ok(());
+        }
+    }
+
     let reason = reason_of(msg);
 
     // Есть ли уже активное голосование против этого человека
@@ -601,9 +610,20 @@ async fn apply_vote(
     if let Err(e) = bot.ban_chat_member(chat, target.id).await {
         log::error!("Ban failed: {e}");
 
+        // Отменяем голосование, чтобы кнопка не пыталась банить снова
+        if let Err(e) = db::cancel_vote(pool, vote_id).await {
+            log::error!("DB error: {e}");
+        }
+
+        if let Ok(Some(old_id)) = db::vote_message(pool, vote_id).await {
+            if let Err(e) = bot.delete_message(chat, MessageId(old_id as i32)).await {
+                log::warn!("Failed to delete vote message: {e}");
+            }
+        }
+
         bot.send_message(
             chat,
-            "Голосование набрало кворум, но бан не удался. \
+            "Голосование набрало кворум, но бан не удался. Голосование отменено. \
              Бот должен быть админом с правом блокировать участников",
         )
         .await?;
@@ -752,9 +772,25 @@ async fn support(bot: Bot, q: CallbackQuery, pool: SqlitePool) -> ResponseResult
     };
 
     match db::add_vote(&pool, vote_id, q.from.id.0 as i64, None).await {
-        Ok(true) => {}
+        Ok(true) => {
+            log::info!(
+                "Vote added: chat={} by={} target={} vote_id={}",
+                chat,
+                q.from.id.0,
+                target,
+                vote_id
+            );
+        }
 
         Ok(false) => {
+            log::info!(
+                "Duplicate vote: chat={} by={} target={} vote_id={}",
+                chat,
+                q.from.id.0,
+                target,
+                vote_id
+            );
+
             bot.answer_callback_query(q.id)
                 .text("Ты уже голосовал за этого человека")
                 .await?;
