@@ -287,6 +287,19 @@ pub async fn vote_message(pool: &SqlitePool, vote_id: i64) -> Result<Option<i64>
         .await
 }
 
+pub async fn vote_info(
+    pool: &SqlitePool,
+    vote_id: i64,
+) -> Result<Option<(i64, i64, Option<i64>, Option<i64>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT chat_id, target_user_id, message_id, reported_message_id \
+         FROM votes WHERE id = ? AND status = 'active'",
+    )
+    .bind(vote_id)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn vote_reasons(pool: &SqlitePool, vote_id: i64) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT reason FROM vote_users WHERE vote_id = ? AND reason IS NOT NULL ORDER BY rowid",
